@@ -1,0 +1,99 @@
+name: NWIS service health check
+
+on:
+  schedule:
+    - cron: '0 12 1 * *'   # first of every month at noon UTC
+  workflow_dispatch:        # allow manual trigger at any time
+
+jobs:
+  check-nwis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dataretrieval
+        run: pip install dataretrieval
+
+      - name: Test NWIS site query
+        id: site_query
+        run: |
+          python - <<'EOF'
+          import warnings
+          warnings.filterwarnings('error', category=DeprecationWarning)
+          import dataretrieval.nwis as nwis
+          df, _ = nwis.get_info(sites=['05331000'])
+          assert not df.empty, "Empty response from get_info"
+          print("NWIS get_info OK:", df['station_nm'].tolist())
+          EOF
+
+      - name: Test NWIS daily-values query
+        id: dv_query
+        run: |
+          python - <<'EOF'
+          import dataretrieval.nwis as nwis
+          df, _ = nwis.get_dv(sites=['05331000'], parameterCd='00060',
+                               start='2020-01-01', end='2020-01-03')
+          assert not df.empty, "Empty response from get_dv"
+          print("NWIS get_dv OK:", len(df), "rows")
+          EOF
+
+      - name: File issue if NWIS failed
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const title = '🔥 NWIS legacy service may be decommissioned — migrate to dataretrieval.waterdata';
+
+            // Avoid duplicate issues: check for an existing open issue with the same title
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'nwis-migration',
+            });
+            if (existing.data.some(i => i.title === title)) {
+              core.info('Issue already open, skipping creation.');
+              return;
+            }
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: title,
+              labels: ['nwis-migration', 'bug'],
+              body: [
+                '## NWIS health check failed',
+                '',
+                'The monthly service health check detected that one or both of the',
+                'legacy NWIS API calls used by `v.in.nwis` are no longer working:',
+                '',
+                '- `dataretrieval.nwis.get_info()` — site metadata',
+                '- `dataretrieval.nwis.get_dv()` — daily values',
+                '',
+                'This is the expected failure mode when USGS decommissions the legacy',
+                'NWIS web services in favour of the new Water Data API.',
+                '',
+                '## What needs to change',
+                '',
+                '1. Replace `dataretrieval.nwis.get_info()` with the equivalent call',
+                '   in `dataretrieval.waterdata` (check the [dataretrieval changelog]',
+                '   (https://github.com/DOI-USGS/dataretrieval-python/releases) for',
+                '   the new function names and returned column names).',
+                '2. Replace `dataretrieval.nwis.get_dv()` similarly.',
+                '3. Update the column-name parsing in `write_timeseries()` — the new',
+                '   API may return differently structured column names.',
+                '4. Update the `_NWIS_DEPRECATION_HINT` message and remove it once',
+                '   the migration is complete.',
+                '',
+                '## References',
+                '',
+                '- [dataretrieval-python releases](https://github.com/DOI-USGS/dataretrieval-python/releases)',
+                '- [USGS Water Data API](https://waterdata.usgs.gov/blog/api_catalog/)',
+                '- [Workflow run that triggered this issue](' +
+                  `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId})`,
+              ].join('\n'),
+            });

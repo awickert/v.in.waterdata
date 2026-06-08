@@ -162,20 +162,33 @@ def geodataframe_to_grass(gdf, output):
                    overwrite=gs.overwrite(), quiet=True)
 
 
+_NWIS_DEPRECATION_HINT = (
+    "The USGS is decommissioning its legacy NWIS web services in favour of a "
+    "new API. If this error persists, the 'nwis' module in dataretrieval may "
+    "no longer work. Migrate to 'dataretrieval.waterdata' and update v.in.nwis "
+    "accordingly. See: https://github.com/awickert/v.in.nwis/issues"
+)
+
+
 def fetch_sites(site_ids, bbox):
     """Fetch NWIS site metadata; return a GeoDataFrame of gauge points."""
     import dataretrieval.nwis as nwis
     import geopandas as gpd
     from shapely.geometry import Point
 
-    if site_ids:
-        df, _ = nwis.get_info(sites=site_ids)
-    else:
-        west, south, east, north = bbox
-        df, _ = nwis.get_info(
-            bBox=(west, south, east, north),
-            siteType='ST',
-            hasDataTypeCd='dv',
+    try:
+        if site_ids:
+            df, _ = nwis.get_info(sites=site_ids)
+        else:
+            west, south, east, north = bbox
+            df, _ = nwis.get_info(
+                bBox=(west, south, east, north),
+                siteType='ST',
+                hasDataTypeCd='dv',
+            )
+    except Exception as e:
+        gs.fatal(
+            "NWIS site query failed: {}\n{}".format(e, _NWIS_DEPRECATION_HINT)
         )
 
     if df.empty:
@@ -225,12 +238,17 @@ def write_timeseries(site_nos, parameter_cd, start_date, end_date, table_name):
     import dataretrieval.nwis as nwis
 
     gs.message("Fetching daily values ({} – {})...".format(start_date, end_date))
-    df, _ = nwis.get_dv(
-        sites=site_nos,
-        parameterCd=parameter_cd,
-        start=start_date,
-        end=end_date,
-    )
+    try:
+        df, _ = nwis.get_dv(
+            sites=site_nos,
+            parameterCd=parameter_cd,
+            start=start_date,
+            end=end_date,
+        )
+    except Exception as e:
+        gs.fatal(
+            "NWIS time series query failed: {}\n{}".format(e, _NWIS_DEPRECATION_HINT)
+        )
 
     if df is None or df.empty:
         gs.warning("No time series data returned from NWIS.")
