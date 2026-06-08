@@ -25,18 +25,16 @@ of the standard GRASS installation:
       &mdash; geospatial DataFrames</li>
   <li><a href="https://shapely.readthedocs.io/">shapely</a>
       &mdash; geometry objects (usually installed with geopandas)</li>
-  <li><a href="https://hyriver.readthedocs.io/en/latest/readme/pynhd.html">pynhd</a>
-      &mdash; NLDI basin delineation (only required with <b>-b</b> flag)</li>
 </ul>
 
 Install with pip:
 <div class="code"><pre>
-pip install dataretrieval geopandas pynhd
+pip install dataretrieval geopandas
 </pre></div>
 
 Or with conda:
 <div class="code"><pre>
-conda install -c conda-forge dataretrieval geopandas pynhd
+conda install -c conda-forge dataretrieval geopandas
 </pre></div>
 
 <h3>Gauge locations</h3>
@@ -119,43 +117,108 @@ v.in.nwis output=gauges basins=basins sites=05331000,05330900 \
 
 <h2>EXTENDED EXAMPLE: Mississippi River at St. Paul</h2>
 
-USGS gauge 05331000 (Mississippi River at St. Paul, MN) has a daily
-discharge record from 1892 to the present (48,000+ days) and a drainage
-area of 36,800 mi&sup2; (95,300 km&sup2;). The script
-<a href="example/mississippi_stpaul.sh">example/mississippi_stpaul.sh</a>
-demonstrates the full workflow:
+USGS gauge 05331000 (Mississippi River at St. Paul, MN) has a continuous
+daily discharge record from 1892 to the present (48,000+ days) and a
+drainage area of 36,800 mi&sup2; (95,300 km&sup2;) covering much of the
+upper Midwest. This example demonstrates the complete workflow: importing
+the gauge, its upstream basin, and the full historical discharge record,
+then querying the results.
+
+The full script is also available as
+<a href="example/mississippi_stpaul.sh">example/mississippi_stpaul.sh</a>.
+
+<h3>1. Set the computational region and import data</h3>
 
 <div class="code"><pre>
-# Run inside an active GRASS session (any CRS; data are reprojected automatically)
-grass --tmp-project EPSG:4326 --exec bash example/mississippi_stpaul.sh
+g.region n=45.1 s=44.8 e=-92.9 w=-93.3 res=0:00:30
+
+v.in.nwis output=mississippi_stpaul \
+          basins=mississippi_stpaul_basin \
+          sites=05331000 \
+          parameter_cd=00060 \
+          start_date=1892-03-01 \
+          end_date=2026-06-06 \
+          -bt
 </pre></div>
 
-The script:
-<ol>
-  <li>Imports the gauge location, upstream basin polygon, and the complete
-      daily discharge record in one command</li>
-  <li>Reads the NWIS-reported drainage area directly from the gauge attribute
-      table (<em>drain_area_va</em>, in mi&sup2;)</li>
-  <li>Independently computes basin area from the imported polygon with
-      <em>v.to.db</em> as a cross-check</li>
-  <li>Queries the time series table for record extent, basic statistics, and
-      the five highest discharge days on record</li>
-</ol>
+This creates:
+<ul>
+  <li><em>mississippi_stpaul</em> &mdash; vector point map of the gauge location</li>
+  <li><em>mississippi_stpaul_basin</em> &mdash; vector polygon of the upstream drainage basin</li>
+  <li><em>mississippi_stpaul_timeseries</em> &mdash; SQLite table of 48,254 daily discharge values</li>
+</ul>
 
-Example output from step 4:
+<h3>2. Gauge metadata and NWIS-reported drainage area</h3>
+
+The <em>drain_area_va</em> column (drainage area in mi&sup2;) is retrieved
+directly from NWIS site metadata:
 
 <div class="code"><pre>
---- Time series record extent and basic statistics ---
+db.select sql="SELECT site_no, station_nm, dec_lat_va, dec_long_va, drain_area_va \
+               FROM mississippi_stpaul"
+</pre></div>
+
+<div class="code"><pre>
+site_no |station_nm                        |dec_lat_va |dec_long_va |drain_area_va
+05331000|MISSISSIPPI RIVER AT ST. PAUL, MN |44.9444444 |-93.0881111 |36800.0
+</pre></div>
+
+<h3>3. Basin area computed from the imported polygon</h3>
+
+<em>v.to.db</em> computes the area of the basin polygon independently as a
+cross-check against the NWIS-reported value:
+
+<div class="code"><pre>
+v.to.db map=mississippi_stpaul_basin option=area columns=area_sq_km units=kilometers
+
+db.select sql="SELECT site_no, \
+                      ROUND(area_sq_km, 0)        AS area_km2, \
+                      ROUND(area_sq_km / 2.590, 0) AS area_mi2 \
+               FROM mississippi_stpaul_basin"
+</pre></div>
+
+<div class="code"><pre>
+site_no |area_km2|area_mi2
+05331000|  95343 |   36812
+</pre></div>
+
+<h3>4. Time series queries</h3>
+
+Record extent and basic statistics:
+
+<div class="code"><pre>
+db.select sql="SELECT COUNT(*)             AS n_days, \
+                      MIN(datetime)        AS first_date, \
+                      MAX(datetime)        AS last_date, \
+                      ROUND(MIN(value), 0) AS min_cfs, \
+                      ROUND(AVG(value), 0) AS mean_cfs, \
+                      ROUND(MAX(value), 0) AS max_cfs \
+               FROM mississippi_stpaul_timeseries \
+               WHERE value IS NOT NULL"
+</pre></div>
+
+<div class="code"><pre>
 n_days|first_date               |last_date                |min_cfs|mean_cfs|max_cfs
 48254 |1892-03-01 00:00:00+00:00|2026-06-06 00:00:00+00:00|    632|   13060| 171000
+</pre></div>
 
---- Five highest discharge days on record ---
-site_no |date       |discharge_cfs|flag
-05331000|1965-04-16 |       171000|A
-05331000|1965-04-17 |       169000|A
-05331000|1965-04-15 |       166000|A
-05331000|1965-04-18 |       163000|A
-05331000|1965-04-14 |       160000|A
+Five highest discharge days on record (all within the April 1965 flood):
+
+<div class="code"><pre>
+db.select sql="SELECT site_no, SUBSTR(datetime, 1, 10) AS date, value AS discharge_cfs, flag \
+               FROM mississippi_stpaul_timeseries \
+               WHERE value IS NOT NULL \
+               ORDER BY value DESC \
+               LIMIT 5"
+</pre></div>
+
+<div class="code"><pre>
+site_no |date      |discharge_cfs|flag
+05331000|1965-04-16|       171000|A
+05331000|1965-04-17|       169000|A
+05331000|1965-04-15|       166000|A
+05331000|1965-04-18|       163000|A
+05331000|1965-04-14|       160000|A
 </pre></div>
 
 <h2>SEE ALSO</h2>
