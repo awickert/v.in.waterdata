@@ -1,0 +1,145 @@
+<h2>DESCRIPTION</h2>
+
+<em>v.in.nwis</em> imports USGS National Water Information System (NWIS) stream
+gauge data into GRASS GIS. It can retrieve gauge locations as vector points,
+upstream drainage basin boundaries as vector polygons (via the USGS Network
+Linked Data Index, NLDI), and daily discharge time series stored as a linked
+SQLite table.
+
+<p>
+Gauges can be specified by NWIS site ID or, if none are given, all stream
+gauges with daily-value records within the current GRASS computational region
+are retrieved.
+
+<h2>NOTES</h2>
+
+<h3>Required Python packages</h3>
+
+<em>v.in.nwis</em> requires the following Python packages, which are not part
+of the standard GRASS installation:
+
+<ul>
+  <li><a href="https://doi-usgs.github.io/dataretrieval-python/">dataretrieval</a>
+      &mdash; USGS NWIS data access</li>
+  <li><a href="https://geopandas.org/">geopandas</a>
+      &mdash; geospatial DataFrames</li>
+  <li><a href="https://shapely.readthedocs.io/">shapely</a>
+      &mdash; geometry objects (usually installed with geopandas)</li>
+  <li><a href="https://hyriver.readthedocs.io/en/latest/readme/pynhd.html">pynhd</a>
+      &mdash; NLDI basin delineation (only required with <b>-b</b> flag)</li>
+</ul>
+
+Install with pip:
+<div class="code"><pre>
+pip install dataretrieval geopandas pynhd
+</pre></div>
+
+Or with conda:
+<div class="code"><pre>
+conda install -c conda-forge dataretrieval geopandas pynhd
+</pre></div>
+
+<h3>Gauge locations</h3>
+
+Gauge locations are imported as a vector point map. The attribute table
+contains the NWIS site metadata including site number, station name, latitude,
+longitude, and drainage area (where available).
+
+<h3>Upstream drainage basins</h3>
+
+With the <b>-b</b> flag, upstream drainage basin polygons are fetched from the
+USGS Network Linked Data Index (NLDI) and imported as a separate vector polygon
+map. The <b>basins</b> option must also be specified. Basin polygons are keyed
+to gauge locations by the <em>site_no</em> attribute.
+
+<p>
+NLDI basins are pre-computed and delivered as polygons in EPSG:4326. For gauges
+outside the NHDPlus network (e.g. non-US locations) use <em>r.watershed</em>
+and <em>v.stream.inbasin</em> instead.
+
+<h3>Time series</h3>
+
+With the <b>-t</b> flag, daily values for the chosen parameter code are fetched
+and stored in the mapset SQLite database as a table named
+<em>&lt;output&gt;_timeseries</em>, with columns:
+
+<ul>
+  <li><em>site_no</em> &mdash; NWIS site identifier (links to the gauge point map)</li>
+  <li><em>datetime</em> &mdash; date as a string (YYYY-MM-DD HH:MM:SS+00:00)</li>
+  <li><em>value</em> &mdash; measured value in the parameter's native units</li>
+  <li><em>flag</em> &mdash; NWIS quality code (A=approved, P=provisional, e=estimated)</li>
+</ul>
+
+The table can be queried with:
+<div class="code"><pre>
+db.select sql="SELECT * FROM gauges_timeseries WHERE site_no='05331000' LIMIT 10"
+</pre></div>
+
+<h3>Coordinate reference system</h3>
+
+NWIS gauge locations and NLDI basins are delivered in EPSG:4326 (WGS84
+geographic). <em>v.in.ogr</em> reprojects them to the current GRASS location's
+CRS on import.
+
+<h2>EXAMPLES</h2>
+
+Import all stream gauges with daily records within the current region:
+<div class="code"><pre>
+v.in.nwis output=gauges
+</pre></div>
+
+Import specific gauges by site ID:
+<div class="code"><pre>
+v.in.nwis output=gauges sites=05331000,05288500
+</pre></div>
+
+Import gauges, upstream basins, and 10 years of daily discharge:
+<div class="code"><pre>
+v.in.nwis output=gauges basins=basins sites=05331000 \
+    start_date=2010-01-01 end_date=2019-12-31 -bt
+</pre></div>
+
+Import only basins and time series (no additional region query):
+<div class="code"><pre>
+v.in.nwis output=gauges basins=basins sites=05331000,05330900 \
+    parameter_cd=00065 start_date=2020-01-01 end_date=2023-12-31 -bt
+</pre></div>
+
+<h2>COMMON NWIS PARAMETER CODES</h2>
+
+<table border="1">
+<tr><th>Code</th><th>Parameter</th><th>Units</th></tr>
+<tr><td>00060</td><td>Discharge</td><td>ft&sup3;/s</td></tr>
+<tr><td>00065</td><td>Gage height</td><td>ft</td></tr>
+<tr><td>00010</td><td>Water temperature</td><td>&deg;C</td></tr>
+<tr><td>00400</td><td>pH</td><td>standard units</td></tr>
+<tr><td>00300</td><td>Dissolved oxygen</td><td>mg/L</td></tr>
+<tr><td>63680</td><td>Turbidity</td><td>FNU</td></tr>
+</table>
+
+<h2>SEE ALSO</h2>
+
+<em>
+<a href="v.in.ogr.html">v.in.ogr</a>,
+<a href="r.watershed.html">r.watershed</a>,
+<a href="v.stream.inbasin.html">v.stream.inbasin</a>,
+<a href="db.select.html">db.select</a>
+</em>
+
+<h2>REFERENCES</h2>
+
+<ul>
+  <li>Read, J.S., et al. (2023). <em>dataretrieval</em>: R and Python packages
+      for discovering and retrieving water data available from U.S. federal
+      hydrologic web services. U.S. Geological Survey.
+      <a href="https://doi.org/10.5066/P9X4L3GE">doi:10.5066/P9X4L3GE</a></li>
+  <li>Blodgett, D. (2023). Network Linked Data Index (NLDI).
+      <a href="https://labs.waterdata.usgs.gov/api/nldi/linked-data/">
+      labs.waterdata.usgs.gov</a></li>
+</ul>
+
+<h2>AUTHOR</h2>
+
+Andrew D. Wickert
+
+<p><i>Last changed: 2026</i>
