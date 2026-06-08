@@ -117,6 +117,47 @@ v.in.nwis output=gauges basins=basins sites=05331000,05330900 \
 <tr><td>63680</td><td>Turbidity</td><td>FNU</td></tr>
 </table>
 
+<h2>EXTENDED EXAMPLE: Mississippi River at St. Paul</h2>
+
+USGS gauge 05331000 (Mississippi River at St. Paul, MN) has a daily
+discharge record from 1892 to the present (48,000+ days) and a drainage
+area of 36,800 mi&sup2; (95,300 km&sup2;). The script
+<a href="example/mississippi_stpaul.sh">example/mississippi_stpaul.sh</a>
+demonstrates the full workflow:
+
+<div class="code"><pre>
+# Run inside an active GRASS session (any CRS; data are reprojected automatically)
+grass --tmp-project EPSG:4326 --exec bash example/mississippi_stpaul.sh
+</pre></div>
+
+The script:
+<ol>
+  <li>Imports the gauge location, upstream basin polygon, and the complete
+      daily discharge record in one command</li>
+  <li>Reads the NWIS-reported drainage area directly from the gauge attribute
+      table (<em>drain_area_va</em>, in mi&sup2;)</li>
+  <li>Independently computes basin area from the imported polygon with
+      <em>v.to.db</em> as a cross-check</li>
+  <li>Queries the time series table for record extent, basic statistics, and
+      the five highest discharge days on record</li>
+</ol>
+
+Example output from step 4:
+
+<div class="code"><pre>
+--- Time series record extent and basic statistics ---
+n_days|first_date               |last_date                |min_cfs|mean_cfs|max_cfs
+48254 |1892-03-01 00:00:00+00:00|2026-06-06 00:00:00+00:00|    632|   13060| 171000
+
+--- Five highest discharge days on record ---
+site_no |date       |discharge_cfs|flag
+05331000|1965-04-16 |       171000|A
+05331000|1965-04-17 |       169000|A
+05331000|1965-04-15 |       166000|A
+05331000|1965-04-18 |       163000|A
+05331000|1965-04-14 |       160000|A
+</pre></div>
+
 <h2>SEE ALSO</h2>
 
 <em>
