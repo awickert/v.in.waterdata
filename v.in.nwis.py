@@ -91,6 +91,13 @@ import atexit
 
 import grass.script as gs
 
+# System pyproj may not find its PROJ database when GRASS is launched from
+# an environment where PROJ_DATA points elsewhere (e.g. an Anaconda install).
+# Try the known system location before any pyproj import occurs.
+if not os.environ.get('PROJ_DATA') and not os.environ.get('PROJ_LIB'):
+    if os.path.exists('/usr/share/proj/proj.db'):
+        os.environ['PROJ_DATA'] = '/usr/share/proj'
+
 TMPFILES = []
 
 
@@ -138,12 +145,17 @@ def geodataframe_to_grass(gdf, output):
 
     fd, tmp = tempfile.mkstemp(suffix='.gpkg')
     os.close(fd)
+    os.remove(tmp)  # fiona must create the GeoPackage itself; remove the empty placeholder
     TMPFILES.append(tmp)
 
-    # Coerce any Arrow-backed string columns to plain Python strings so
-    # GPKG writing doesn't choke on non-standard dtypes
-    for col in gdf.select_dtypes(include='object').columns:
-        gdf[col] = gdf[col].astype(str)
+    # Coerce all non-geometry columns to object dtype so fiona (used by
+    # older geopandas) doesn't choke on Arrow-backed or other non-numpy dtypes
+    # (pandas 3.x uses Arrow strings by default; fiona expects object dtype)
+    for col in [c for c in gdf.columns if c != 'geometry']:
+        try:
+            gdf[col] = gdf[col].astype(object)
+        except (TypeError, ValueError):
+            gdf[col] = gdf[col].astype(str).astype(object)
 
     gdf.to_file(tmp, driver='GPKG')
     gs.run_command('v.in.ogr', input=tmp, output=output,
@@ -181,17 +193,31 @@ def fetch_sites(site_ids, bbox):
     return gdf
 
 
+_NLDI_BASE = 'https://api.water.usgs.gov/nldi/linked-data/nwissite'
+
+
 def fetch_basins(site_nos):
     """Fetch upstream basin polygons from NLDI; return a GeoDataFrame."""
-    from pynhd import NLDI
+    import io
+    import requests
+    import geopandas as gpd
+    import pandas as pd
 
-    nldi = NLDI()
-    nldi_ids = ["USGS-{}".format(s) for s in site_nos]
-    basins = nldi.get_basins(nldi_ids)
-    basins = basins.reset_index()
-    basins = basins.rename(columns={'index': 'nldi_id'})
-    basins['site_no'] = basins['nldi_id'].str.replace('USGS-', '', regex=False)
-    return basins
+    parts = []
+    for site_no in site_nos:
+        url = '{}/USGS-{}/basin'.format(_NLDI_BASE, site_no)
+        try:
+            r = requests.get(url, timeout=30)
+            r.raise_for_status()
+            gdf = gpd.read_file(io.StringIO(r.text))
+            gdf['site_no'] = site_no
+            parts.append(gdf)
+        except Exception as e:
+            gs.warning("Basin fetch failed for site {}: {}".format(site_no, e))
+
+    if not parts:
+        gs.fatal("No upstream basins could be retrieved from NLDI.")
+    return pd.concat(parts, ignore_index=True)
 
 
 def write_timeseries(site_nos, parameter_cd, start_date, end_date, table_name):
@@ -287,8 +313,6 @@ def main():
     require_package('dataretrieval')
     require_package('geopandas')
     require_package('shapely')
-    if flag_basins:
-        require_package('pynhd')
 
     site_ids = [s.strip() for s in sites_str.split(',')] if sites_str else None
     bbox = None if site_ids else get_geographic_bbox()
