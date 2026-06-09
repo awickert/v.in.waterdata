@@ -1,6 +1,6 @@
 MODULE_TOPDIR = $(shell grass --config path)
 
-PGM = v.in.nwis
+PGM = v.in.waterdata
 
 include $(MODULE_TOPDIR)/include/Make/Script.make
 

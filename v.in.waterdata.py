@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 ############################################################################
 #
-# MODULE:       v.in.nwis
+# MODULE:       v.in.waterdata
 #
 # AUTHOR(S):    Andrew Wickert
 #
-# PURPOSE:      Import USGS NWIS stream gauge locations, upstream drainage
-#               basins (via NLDI), and discharge time series into GRASS GIS
+# PURPOSE:      Import USGS Water Data stream gauge locations, upstream drainage
+#               basins (via NLDI), discharge time series, rating curves, and
+#               channel geometry into GRASS GIS
 #
 # COPYRIGHT:    (c) 2026 Andrew Wickert
 #
@@ -17,13 +18,15 @@
 #############################################################################
 
 #%module
-#% description: Import USGS NWIS stream gauge locations, upstream basins, and discharge time series
+#% description: Import USGS Water Data stream gauge locations, upstream basins, discharge time series, rating curves, and channel geometry
 #% keyword: vector
 #% keyword: import
 #% keyword: hydrology
-#% keyword: NWIS
+#% keyword: USGS
+#% keyword: waterdata
 #% keyword: stream gauge
 #% keyword: discharge
+#% keyword: rating curve
 #%end
 
 #%option G_OPT_V_OUTPUT
@@ -41,14 +44,14 @@
 #%option
 #%  key: sites
 #%  type: string
-#%  label: Comma-separated NWIS site IDs (if omitted, searches within current region)
+#%  label: Comma-separated USGS site IDs (if omitted, searches within current region)
 #%  required: no
 #%end
 
 #%option
 #%  key: parameter_cd
 #%  type: string
-#%  label: NWIS parameter code
+#%  label: USGS parameter code
 #%  description: 00060=discharge [ft3/s], 00065=gage height [ft], 00010=water temperature [degC]
 #%  answer: 00060
 #%  required: no
@@ -76,6 +79,16 @@
 #%flag
 #%  key: t
 #%  description: Fetch daily discharge time series (requires start_date and end_date)
+#%end
+
+#%flag
+#%  key: r
+#%  description: Fetch current shift-adjusted rating curve
+#%end
+
+#%flag
+#%  key: c
+#%  description: Fetch channel geometry from field measurements
 #%end
 
 #%rules
@@ -141,11 +154,9 @@ def get_geographic_bbox():
 
 def geodataframe_to_grass(gdf, output):
     """Write a GeoDataFrame to a temp GeoPackage and import it into GRASS."""
-    import geopandas as gpd
-
     fd, tmp = tempfile.mkstemp(suffix='.gpkg')
     os.close(fd)
-    os.remove(tmp)  # fiona must create the GeoPackage itself; remove the empty placeholder
+    os.remove(tmp)  # fiona must create the GeoPackage itself
     TMPFILES.append(tmp)
 
     # Coerce all non-geometry columns to object dtype so fiona (used by
@@ -162,51 +173,62 @@ def geodataframe_to_grass(gdf, output):
                    overwrite=gs.overwrite(), quiet=True)
 
 
-_NWIS_DEPRECATION_HINT = (
-    "The USGS is decommissioning its legacy NWIS web services in favour of a "
-    "new API. If this error persists, the 'nwis' module in dataretrieval may "
-    "no longer work. Migrate to 'dataretrieval.waterdata' and update v.in.nwis "
-    "accordingly. See: https://github.com/awickert/v.in.nwis/issues"
-)
-
-
-def fetch_sites(site_ids, bbox):
-    """Fetch NWIS site metadata; return a GeoDataFrame of gauge points."""
-    import dataretrieval.nwis as nwis
-    import geopandas as gpd
-    from shapely.geometry import Point
-
-    try:
-        if site_ids:
-            df, _ = nwis.get_info(sites=site_ids)
-        else:
-            west, south, east, north = bbox
-            df, _ = nwis.get_info(
-                bBox=(west, south, east, north),
-                siteType='ST',
-                hasDataTypeCd='dv',
-            )
-    except Exception as e:
-        gs.fatal(
-            "NWIS site query failed: {}\n{}".format(e, _NWIS_DEPRECATION_HINT)
-        )
-
-    if df.empty:
-        gs.fatal("No NWIS stream gauge sites found.")
-
-    df = df.reset_index(drop=True)
-    df = df.dropna(subset=['dec_long_va', 'dec_lat_va'])
-
-    geometry = [
-        Point(float(lon), float(lat))
-        for lon, lat in zip(df['dec_long_va'], df['dec_lat_va'])
-    ]
-    gdf = gpd.GeoDataFrame(df, geometry=geometry, crs='EPSG:4326')
-    gs.message("Found {} NWIS site(s).".format(len(gdf)))
-    return gdf
+def _mapset_db_path():
+    """Return the mapset SQLite database path, creating the directory if needed."""
+    gisenv = gs.gisenv()
+    db_dir = os.path.join(
+        gisenv['GISDBASE'], gisenv['LOCATION_NAME'], gisenv['MAPSET'], 'sqlite'
+    )
+    os.makedirs(db_dir, exist_ok=True)
+    return os.path.join(db_dir, 'sqlite.db')
 
 
 _NLDI_BASE = 'https://api.water.usgs.gov/nldi/linked-data/nwissite'
+
+
+def _to_monitoring_id(site_no):
+    """Convert a bare USGS site number to a USGS-prefixed monitoring location ID."""
+    return site_no if site_no.startswith('USGS-') else 'USGS-{}'.format(site_no)
+
+
+def fetch_sites(site_ids, bbox):
+    """Fetch USGS monitoring location metadata; return a GeoDataFrame."""
+    import dataretrieval.waterdata as waterdata
+    import geopandas as gpd
+
+    try:
+        if site_ids:
+            mon_ids = [_to_monitoring_id(s) for s in site_ids]
+            gdf, _ = waterdata.get_monitoring_locations(monitoring_location_id=mon_ids)
+        else:
+            west, south, east, north = bbox
+            gdf, _ = waterdata.get_monitoring_locations(
+                bbox=[west, south, east, north],
+                site_type_code='ST',
+            )
+    except Exception as e:
+        gs.fatal("Water Data site query failed: {}".format(e))
+
+    if gdf is None or gdf.empty:
+        gs.fatal("No stream gauge sites found.")
+
+    gdf = gdf.reset_index(drop=True)
+
+    # get_monitoring_locations returns a GeoDataFrame but without CRS set
+    if not isinstance(gdf, gpd.GeoDataFrame):
+        from shapely import wkt as shapely_wkt
+        gdf['geometry'] = gdf['geometry'].apply(
+            lambda g: shapely_wkt.loads(str(g)) if g is not None else None
+        )
+        gdf = gpd.GeoDataFrame(gdf, geometry='geometry')
+    if gdf.crs is None:
+        gdf = gdf.set_crs('EPSG:4326')
+
+    # site_no: bare numeric ID used as join key with basins and SQLite tables
+    gdf['site_no'] = gdf['monitoring_location_number'].astype(str)
+
+    gs.message("Found {} site(s).".format(len(gdf)))
+    return gdf
 
 
 def fetch_basins(site_nos):
@@ -234,72 +256,127 @@ def fetch_basins(site_nos):
 
 
 def write_timeseries(site_nos, parameter_cd, start_date, end_date, table_name):
-    """Fetch NWIS daily values and store in the mapset SQLite database."""
-    import dataretrieval.nwis as nwis
+    """Fetch USGS daily values and store in the mapset SQLite database."""
+    import dataretrieval.waterdata as waterdata
+
+    mon_ids = [_to_monitoring_id(s) for s in site_nos]
+    time_range = '{}/{}'.format(start_date, end_date)
 
     gs.message("Fetching daily values ({} – {})...".format(start_date, end_date))
     try:
-        df, _ = nwis.get_dv(
-            sites=site_nos,
-            parameterCd=parameter_cd,
-            start=start_date,
-            end=end_date,
+        df, _ = waterdata.get_daily(
+            monitoring_location_id=mon_ids,
+            parameter_code=parameter_cd,
+            time=time_range,
         )
     except Exception as e:
-        gs.fatal(
-            "NWIS time series query failed: {}\n{}".format(e, _NWIS_DEPRECATION_HINT)
-        )
+        gs.fatal("Water Data time series query failed: {}".format(e))
 
     if df is None or df.empty:
-        gs.warning("No time series data returned from NWIS.")
+        gs.warning("No time series data returned.")
         return
 
-    df = df.reset_index()
-
-    value_cols = [c for c in df.columns
-                  if c.startswith(parameter_cd) and not c.endswith('_cd')]
-    flag_cols = [c for c in df.columns
-                 if c.startswith(parameter_cd) and c.endswith('_cd')]
-
-    if not value_cols:
-        gs.warning("No data column found for parameter {}.".format(parameter_cd))
-        return
-
-    value_col = value_cols[0]
-    flag_col = flag_cols[0] if flag_cols else None
-    dt_col = 'datetime' if 'datetime' in df.columns else df.columns[0]
-
-    gisenv = gs.gisenv()
-    db_dir = os.path.join(
-        gisenv['GISDBASE'], gisenv['LOCATION_NAME'], gisenv['MAPSET'], 'sqlite'
+    df['site_no'] = df['monitoring_location_id'].str.replace(
+        r'^[A-Z]+-', '', regex=True
     )
-    os.makedirs(db_dir, exist_ok=True)
-    db_path = os.path.join(db_dir, 'sqlite.db')
 
+    db_path = _mapset_db_path()
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
     cur.execute('DROP TABLE IF EXISTS "{}"'.format(table_name))
     cur.execute('''
         CREATE TABLE "{}" (
-            site_no  TEXT,
-            datetime TEXT,
-            value    REAL,
-            flag     TEXT
+            site_no          TEXT,
+            datetime         TEXT,
+            value            REAL,
+            unit_of_measure  TEXT,
+            approval_status  TEXT,
+            qualifier        TEXT
         )
     '''.format(table_name))
 
     rows = []
     for _, row in df.iterrows():
-        site = str(row['site_no']) if 'site_no' in df.columns else site_nos[0]
-        dt = str(row[dt_col])
-        raw = row[value_col]
         try:
-            val = float(raw)
+            val = float(row['value'])
         except (TypeError, ValueError):
             val = None
-        flg = str(row[flag_col]) if flag_col is not None else None
-        rows.append((site, dt, val, flg))
+        qual = row.get('qualifier')
+        if isinstance(qual, list):
+            qual = '; '.join(str(q) for q in qual) if qual else None
+        else:
+            q_str = str(qual).strip() if qual is not None else ''
+            qual = q_str if q_str not in ('', 'None', 'nan', '[]') else None
+        rows.append((
+            str(row['site_no']),
+            str(row['time']),
+            val,
+            str(row.get('unit_of_measure', '')) or None,
+            str(row.get('approval_status', '')) or None,
+            qual,
+        ))
 
+    cur.executemany(
+        'INSERT INTO "{}" VALUES (?, ?, ?, ?, ?, ?)'.format(table_name), rows
+    )
+    conn.commit()
+    conn.close()
+
+    gs.message(
+        "Time series stored: table '{}', {} records.".format(table_name, len(rows))
+    )
+    gs.message(
+        'Query with: db.select sql="SELECT * FROM {} LIMIT 10"'.format(table_name)
+    )
+
+
+def fetch_ratings(site_nos, table_name):
+    """Fetch current shift-adjusted rating curves; store in the mapset SQLite database."""
+    import dataretrieval.waterdata as waterdata
+    import pandas as pd
+
+    gs.message("Fetching rating curves...")
+    parts = []
+    for site_no in site_nos:
+        mon_id = _to_monitoring_id(site_no)
+        try:
+            result = waterdata.get_ratings(monitoring_location_id=mon_id)
+            for df in result.values():
+                df = df.copy()
+                df['site_no'] = site_no
+                parts.append(df)
+        except Exception as e:
+            gs.warning("Rating curve fetch failed for site {}: {}".format(site_no, e))
+
+    if not parts:
+        gs.warning("No rating curves retrieved.")
+        return
+
+    df_all = pd.concat(parts, ignore_index=True)
+
+    db_path = _mapset_db_path()
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute('DROP TABLE IF EXISTS "{}"'.format(table_name))
+    cur.execute('''
+        CREATE TABLE "{}" (
+            site_no       TEXT,
+            stage_ft      REAL,
+            shift_ft      REAL,
+            discharge_cfs REAL
+        )
+    '''.format(table_name))
+
+    def _f(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    rows = [
+        (str(row['site_no']), _f(row.get('INDEP')), _f(row.get('SHIFT')), _f(row.get('DEP')))
+        for _, row in df_all.iterrows()
+    ]
     cur.executemany(
         'INSERT INTO "{}" VALUES (?, ?, ?, ?)'.format(table_name), rows
     )
@@ -307,7 +384,87 @@ def write_timeseries(site_nos, parameter_cd, start_date, end_date, table_name):
     conn.close()
 
     gs.message(
-        "Time series stored: table '{}', {} records.".format(table_name, len(rows))
+        "Rating curve stored: table '{}', {} rows.".format(table_name, len(rows))
+    )
+    gs.message(
+        'Query with: db.select sql="SELECT * FROM {} LIMIT 10"'.format(table_name)
+    )
+
+
+def fetch_channel(site_nos, table_name):
+    """Fetch channel geometry from field measurements; store in the mapset SQLite database."""
+    import dataretrieval.waterdata as waterdata
+    import pandas as pd
+
+    gs.message("Fetching channel geometry from field measurements...")
+    parts = []
+    for site_no in site_nos:
+        mon_id = _to_monitoring_id(site_no)
+        try:
+            df, _ = waterdata.get_channel(monitoring_location_id=mon_id)
+            if not df.empty:
+                df = df.copy()
+                df['site_no'] = site_no
+                parts.append(df)
+        except Exception as e:
+            gs.warning("Channel data fetch failed for site {}: {}".format(site_no, e))
+
+    if not parts:
+        gs.warning("No channel geometry data retrieved.")
+        return
+
+    df_all = pd.concat(parts, ignore_index=True)
+
+    db_path = _mapset_db_path()
+    conn = sqlite3.connect(db_path)
+    cur = conn.cursor()
+    cur.execute('DROP TABLE IF EXISTS "{}"'.format(table_name))
+    cur.execute('''
+        CREATE TABLE "{}" (
+            site_no           TEXT,
+            datetime          TEXT,
+            channel_width     REAL,
+            channel_area      REAL,
+            channel_velocity  REAL,
+            channel_flow      REAL,
+            channel_stability TEXT,
+            channel_material  TEXT,
+            measurement_type  TEXT
+        )
+    '''.format(table_name))
+
+    def _f(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return None
+
+    def _s(v):
+        s = str(v) if v is not None else ''
+        return s if s not in ('', 'None', 'nan', 'NaT', 'Unspecified') else None
+
+    rows = [
+        (
+            str(row['site_no']),
+            _s(row.get('time')),
+            _f(row.get('channel_width')),
+            _f(row.get('channel_area')),
+            _f(row.get('channel_velocity')),
+            _f(row.get('channel_flow')),
+            _s(row.get('channel_stability')),
+            _s(row.get('channel_material')),
+            _s(row.get('measurement_type')),
+        )
+        for _, row in df_all.iterrows()
+    ]
+    cur.executemany(
+        'INSERT INTO "{}" VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'.format(table_name), rows
+    )
+    conn.commit()
+    conn.close()
+
+    gs.message(
+        "Channel data stored: table '{}', {} records.".format(table_name, len(rows))
     )
     gs.message(
         'Query with: db.select sql="SELECT * FROM {} LIMIT 10"'.format(table_name)
@@ -325,12 +482,13 @@ def main():
     end_date = options['end_date']
     flag_basins = flags['b']
     flag_ts = flags['t']
+    flag_ratings = flags['r']
+    flag_channel = flags['c']
 
     atexit.register(cleanup)
 
     require_package('dataretrieval')
     require_package('geopandas')
-    require_package('shapely')
 
     site_ids = [s.strip() for s in sites_str.split(',')] if sites_str else None
     bbox = None if site_ids else get_geographic_bbox()
@@ -340,7 +498,7 @@ def main():
     geodataframe_to_grass(sites_gdf, output)
     gs.message("Gauge locations imported to '{}'.".format(output))
 
-    site_nos = [str(s) for s in sites_gdf['site_no'].tolist()]
+    site_nos = sites_gdf['site_no'].astype(str).tolist()
 
     # Upstream basins
     if flag_basins:
@@ -354,8 +512,18 @@ def main():
 
     # Time series
     if flag_ts:
-        table_name = "{}_timeseries".format(output)
-        write_timeseries(site_nos, parameter_cd, start_date, end_date, table_name)
+        write_timeseries(
+            site_nos, parameter_cd, start_date, end_date,
+            '{}_timeseries'.format(output),
+        )
+
+    # Rating curves
+    if flag_ratings:
+        fetch_ratings(site_nos, '{}_ratings'.format(output))
+
+    # Channel geometry
+    if flag_channel:
+        fetch_channel(site_nos, '{}_channel'.format(output))
 
 
 if __name__ == '__main__':

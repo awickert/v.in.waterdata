@@ -1,26 +1,27 @@
 <h2>DESCRIPTION</h2>
 
-<em>v.in.nwis</em> imports USGS National Water Information System (NWIS) stream
-gauge data into GRASS GIS. It can retrieve gauge locations as vector points,
+<em>v.in.waterdata</em> imports USGS stream gauge data from the
+<a href="https://waterdata.usgs.gov/">USGS Water Data for the Nation</a>
+API into GRASS GIS. It can retrieve gauge locations as vector points,
 upstream drainage basin boundaries as vector polygons (via the USGS Network
-Linked Data Index, NLDI), and daily discharge time series stored as a linked
-SQLite table.
+Linked Data Index, NLDI), daily discharge time series, shift-adjusted rating
+curves, and channel geometry from field measurements &mdash; all stored in
+the current mapset.
 
 <p>
-Gauges can be specified by NWIS site ID or, if none are given, all stream
-gauges with daily-value records within the current GRASS computational region
-are retrieved.
+Gauges can be specified by USGS site ID or, if none are given, all stream
+gauges within the current GRASS computational region are retrieved.
 
 <h2>NOTES</h2>
 
 <h3>Required Python packages</h3>
 
-<em>v.in.nwis</em> requires the following Python packages, which are not part
-of the standard GRASS installation:
+<em>v.in.waterdata</em> requires the following Python packages, which are not
+part of the standard GRASS installation:
 
 <ul>
   <li><a href="https://doi-usgs.github.io/dataretrieval-python/">dataretrieval</a>
-      &mdash; USGS NWIS data access</li>
+      &mdash; USGS Water Data API access</li>
   <li><a href="https://geopandas.org/">geopandas</a>
       &mdash; geospatial DataFrames</li>
   <li><a href="https://shapely.readthedocs.io/">shapely</a>
@@ -40,8 +41,11 @@ conda install -c conda-forge dataretrieval geopandas
 <h3>Gauge locations</h3>
 
 Gauge locations are imported as a vector point map. The attribute table
-contains the NWIS site metadata including site number, station name, latitude,
-longitude, and drainage area (where available).
+contains USGS monitoring location metadata including
+<em>site_no</em> (bare numeric ID),
+<em>monitoring_location_name</em> (station name),
+<em>drainage_area</em> (reported drainage area in mi&sup2;),
+and many additional fields (state, county, hydrologic unit, altitude, etc.).
 
 <h3>Upstream drainage basins</h3>
 
@@ -62,10 +66,12 @@ and stored in the mapset SQLite database as a table named
 <em>&lt;output&gt;_timeseries</em>, with columns:
 
 <ul>
-  <li><em>site_no</em> &mdash; NWIS site identifier (links to the gauge point map)</li>
-  <li><em>datetime</em> &mdash; date as a string (YYYY-MM-DD HH:MM:SS+00:00)</li>
+  <li><em>site_no</em> &mdash; USGS site identifier (links to the gauge point map)</li>
+  <li><em>datetime</em> &mdash; date as a string (YYYY-MM-DD HH:MM:SS)</li>
   <li><em>value</em> &mdash; measured value in the parameter's native units</li>
-  <li><em>flag</em> &mdash; NWIS quality code (A=approved, P=provisional, e=estimated)</li>
+  <li><em>unit_of_measure</em> &mdash; unit string (e.g. ft^3/s)</li>
+  <li><em>approval_status</em> &mdash; Approved or Provisional</li>
+  <li><em>qualifier</em> &mdash; optional qualifier such as ESTIMATED (NULL if none)</li>
 </ul>
 
 The table can be queried with:
@@ -73,37 +79,77 @@ The table can be queried with:
 db.select sql="SELECT * FROM gauges_timeseries WHERE site_no='05331000' LIMIT 10"
 </pre></div>
 
+<h3>Rating curves</h3>
+
+With the <b>-r</b> flag, the current shift-adjusted rating curve is fetched for
+each site and stored as a table named <em>&lt;output&gt;_ratings</em>, with columns:
+
+<ul>
+  <li><em>site_no</em> &mdash; USGS site identifier</li>
+  <li><em>stage_ft</em> &mdash; gage height (ft)</li>
+  <li><em>shift_ft</em> &mdash; current applied shift (ft)</li>
+  <li><em>discharge_cfs</em> &mdash; shift-adjusted discharge (ft&sup3;/s)</li>
+</ul>
+
+The rating curve is the dense expanded lookup table used operationally by USGS
+to convert stage readings to discharge values.
+
+<h3>Channel geometry</h3>
+
+With the <b>-c</b> flag, channel geometry summaries from each field measurement
+visit are stored as a table named <em>&lt;output&gt;_channel</em>, with columns:
+
+<ul>
+  <li><em>site_no</em> &mdash; USGS site identifier</li>
+  <li><em>datetime</em> &mdash; date and time of field visit</li>
+  <li><em>channel_width</em> &mdash; measured channel width (ft)</li>
+  <li><em>channel_area</em> &mdash; measured cross-sectional area (ft&sup2;)</li>
+  <li><em>channel_velocity</em> &mdash; mean cross-sectional velocity (ft/s)</li>
+  <li><em>channel_flow</em> &mdash; measured discharge (ft&sup3;/s)</li>
+  <li><em>channel_stability</em> &mdash; bed stability assessment</li>
+  <li><em>channel_material</em> &mdash; dominant bed material</li>
+  <li><em>measurement_type</em> &mdash; measurement method (e.g. BridgeCrane, wading)</li>
+</ul>
+
+Channel geometry records document morphological change over time and provide the
+field measurements used to construct and update rating curves.
+
 <h3>Coordinate reference system</h3>
 
-NWIS gauge locations and NLDI basins are delivered in EPSG:4326 (WGS84
+USGS gauge locations and NLDI basins are delivered in EPSG:4326 (WGS84
 geographic). <em>v.in.ogr</em> reprojects them to the current GRASS location's
 CRS on import.
 
 <h2>EXAMPLES</h2>
 
-Import all stream gauges with daily records within the current region:
+Import all stream gauges within the current region:
 <div class="code"><pre>
-v.in.nwis output=gauges
+v.in.waterdata output=gauges
 </pre></div>
 
 Import specific gauges by site ID:
 <div class="code"><pre>
-v.in.nwis output=gauges sites=05331000,05288500
+v.in.waterdata output=gauges sites=05331000,05288500
 </pre></div>
 
 Import gauges, upstream basins, and 10 years of daily discharge:
 <div class="code"><pre>
-v.in.nwis output=gauges basins=basins sites=05331000 \
+v.in.waterdata output=gauges basins=basins sites=05331000 \
     start_date=2010-01-01 end_date=2019-12-31 -bt
 </pre></div>
 
-Import only basins and time series (no additional region query):
+Import gauge with rating curve and channel geometry:
 <div class="code"><pre>
-v.in.nwis output=gauges basins=basins sites=05331000,05330900 \
-    parameter_cd=00065 start_date=2020-01-01 end_date=2023-12-31 -bt
+v.in.waterdata output=gauges sites=05331000 -rc
 </pre></div>
 
-<h2>COMMON NWIS PARAMETER CODES</h2>
+Import everything for a single gauge:
+<div class="code"><pre>
+v.in.waterdata output=gauges basins=basins sites=05331000 \
+    parameter_cd=00060 start_date=2020-01-01 end_date=2023-12-31 -btrc
+</pre></div>
+
+<h2>COMMON USGS PARAMETER CODES</h2>
 
 <table border="1">
 <tr><th>Code</th><th>Parameter</th><th>Units</th></tr>
@@ -120,9 +166,9 @@ v.in.nwis output=gauges basins=basins sites=05331000,05330900 \
 USGS gauge 05331000 (Mississippi River at St. Paul, MN) has a continuous
 daily discharge record from 1892 to the present (48,000+ days) and a
 drainage area of 36,800 mi&sup2; (95,300 km&sup2;) covering much of the
-upper Midwest. This example demonstrates the complete workflow: importing
-the gauge, its upstream basin, and the full historical discharge record,
-then querying the results.
+upper Midwest. This example demonstrates the complete workflow: gauge location,
+upstream basin, full historical discharge record, shift-adjusted rating curve,
+and channel geometry from field visits.
 
 The full script is also available as
 <a href="example/mississippi_stpaul.sh">example/mississippi_stpaul.sh</a>.
@@ -132,13 +178,13 @@ The full script is also available as
 <div class="code"><pre>
 g.region n=45.1 s=44.8 e=-92.9 w=-93.3 res=0:00:30
 
-v.in.nwis output=mississippi_stpaul \
-          basins=mississippi_stpaul_basin \
-          sites=05331000 \
-          parameter_cd=00060 \
-          start_date=1892-03-01 \
-          end_date=2026-06-06 \
-          -bt
+v.in.waterdata output=mississippi_stpaul \
+               basins=mississippi_stpaul_basin \
+               sites=05331000 \
+               parameter_cd=00060 \
+               start_date=1892-03-01 \
+               end_date=2026-06-06 \
+               -btrc
 </pre></div>
 
 This creates:
@@ -146,33 +192,29 @@ This creates:
   <li><em>mississippi_stpaul</em> &mdash; vector point map of the gauge location</li>
   <li><em>mississippi_stpaul_basin</em> &mdash; vector polygon of the upstream drainage basin</li>
   <li><em>mississippi_stpaul_timeseries</em> &mdash; SQLite table of 48,254 daily discharge values</li>
+  <li><em>mississippi_stpaul_ratings</em> &mdash; SQLite table of the shift-adjusted rating curve</li>
+  <li><em>mississippi_stpaul_channel</em> &mdash; SQLite table of channel geometry from field visits</li>
 </ul>
 
-<h3>2. Gauge metadata and NWIS-reported drainage area</h3>
-
-The <em>drain_area_va</em> column (drainage area in mi&sup2;) is retrieved
-directly from NWIS site metadata:
+<h3>2. Gauge metadata and reported drainage area</h3>
 
 <div class="code"><pre>
-db.select sql="SELECT site_no, station_nm, dec_lat_va, dec_long_va, drain_area_va \
+db.select sql="SELECT site_no, monitoring_location_name, drainage_area \
                FROM mississippi_stpaul"
 </pre></div>
 
 <div class="code"><pre>
-site_no |station_nm                        |dec_lat_va |dec_long_va |drain_area_va
-05331000|MISSISSIPPI RIVER AT ST. PAUL, MN |44.9444444 |-93.0881111 |36800.0
+site_no |monitoring_location_name          |drainage_area
+05331000|MISSISSIPPI RIVER AT ST. PAUL, MN |36800.0
 </pre></div>
 
 <h3>3. Basin area computed from the imported polygon</h3>
-
-<em>v.to.db</em> computes the area of the basin polygon independently as a
-cross-check against the NWIS-reported value:
 
 <div class="code"><pre>
 v.to.db map=mississippi_stpaul_basin option=area columns=area_sq_km units=kilometers
 
 db.select sql="SELECT site_no, \
-                      ROUND(area_sq_km, 0)        AS area_km2, \
+                      ROUND(area_sq_km, 0)         AS area_km2, \
                       ROUND(area_sq_km / 2.590, 0) AS area_mi2 \
                FROM mississippi_stpaul_basin"
 </pre></div>
@@ -187,25 +229,26 @@ site_no |area_km2|area_mi2
 Record extent and basic statistics:
 
 <div class="code"><pre>
-db.select sql="SELECT COUNT(*)             AS n_days, \
-                      MIN(datetime)        AS first_date, \
-                      MAX(datetime)        AS last_date, \
-                      ROUND(MIN(value), 0) AS min_cfs, \
-                      ROUND(AVG(value), 0) AS mean_cfs, \
-                      ROUND(MAX(value), 0) AS max_cfs \
+db.select sql="SELECT COUNT(*)              AS n_days, \
+                      MIN(datetime)         AS first_date, \
+                      MAX(datetime)         AS last_date, \
+                      ROUND(MIN(value), 0)  AS min_cfs, \
+                      ROUND(AVG(value), 0)  AS mean_cfs, \
+                      ROUND(MAX(value), 0)  AS max_cfs \
                FROM mississippi_stpaul_timeseries \
                WHERE value IS NOT NULL"
 </pre></div>
 
 <div class="code"><pre>
-n_days|first_date               |last_date                |min_cfs|mean_cfs|max_cfs
-48254 |1892-03-01 00:00:00+00:00|2026-06-06 00:00:00+00:00|    632|   13060| 171000
+n_days|first_date          |last_date           |min_cfs|mean_cfs|max_cfs
+48254 |1892-03-01 00:00:00 |2026-06-06 00:00:00 |    632|   13060| 171000
 </pre></div>
 
 Five highest discharge days on record (all within the April 1965 flood):
 
 <div class="code"><pre>
-db.select sql="SELECT site_no, SUBSTR(datetime, 1, 10) AS date, value AS discharge_cfs, flag \
+db.select sql="SELECT site_no, SUBSTR(datetime, 1, 10) AS date, \
+                      value AS discharge_cfs, approval_status \
                FROM mississippi_stpaul_timeseries \
                WHERE value IS NOT NULL \
                ORDER BY value DESC \
@@ -213,12 +256,60 @@ db.select sql="SELECT site_no, SUBSTR(datetime, 1, 10) AS date, value AS dischar
 </pre></div>
 
 <div class="code"><pre>
-site_no |date      |discharge_cfs|flag
-05331000|1965-04-16|       171000|A
-05331000|1965-04-17|       169000|A
-05331000|1965-04-15|       166000|A
-05331000|1965-04-18|       163000|A
-05331000|1965-04-14|       160000|A
+site_no |date      |discharge_cfs|approval_status
+05331000|1965-04-16|       171000|Approved
+05331000|1965-04-17|       169000|Approved
+05331000|1965-04-15|       166000|Approved
+05331000|1965-04-18|       163000|Approved
+05331000|1965-04-14|       160000|Approved
+</pre></div>
+
+<h3>5. Rating curve</h3>
+
+Stage-discharge relationship showing the shift tapering from 0.22 ft at low stage
+to zero above ~8.5 ft (the shift compensates for recent channel change at low flows):
+
+<div class="code"><pre>
+db.select sql="SELECT site_no, \
+                      ROUND(shift_ft, 2)      AS shift_ft, \
+                      ROUND(stage_ft, 1)      AS stage_ft, \
+                      ROUND(discharge_cfs, 0) AS discharge_cfs \
+               FROM mississippi_stpaul_ratings \
+               WHERE stage_ft IN (4.0, 5.0, 6.0, 7.0, 8.0) \
+               ORDER BY stage_ft"
+</pre></div>
+
+<div class="code"><pre>
+site_no |shift_ft|stage_ft|discharge_cfs
+05331000|    0.22|     4.0|        18423
+05331000|    0.22|     5.0|        23464
+05331000|    0.22|     6.0|        28667
+05331000|    0.13|     7.0|        33572
+05331000|    0.04|     8.0|        38574
+</pre></div>
+
+<h3>6. Channel geometry</h3>
+
+Recent field measurements showing channel width, area, and velocity:
+
+<div class="code"><pre>
+db.select sql="SELECT site_no, SUBSTR(datetime, 1, 10) AS date, \
+                      channel_width AS width_ft, \
+                      ROUND(channel_area, 0) AS area_ft2, \
+                      ROUND(channel_velocity, 2) AS vel_fps, \
+                      ROUND(channel_flow, 0) AS flow_cfs \
+               FROM mississippi_stpaul_channel \
+               ORDER BY datetime DESC \
+               LIMIT 5"
+</pre></div>
+
+<div class="code"><pre>
+site_no |date      |width_ft|area_ft2|vel_fps|flow_cfs
+05331000|2026-06-05|     599|    9710|   1.22|   11800
+05331000|2026-03-30|     588|   10200|   1.85|   18800
+05331000|2025-11-17|     585|    9620|   0.80|    7740
+05331000|2025-08-29|     608|   12800|   3.07|   39300
+05331000|2025-06-23|     605|   11800|   2.70|   31900
 </pre></div>
 
 <h2>SEE ALSO</h2>
@@ -240,6 +331,9 @@ site_no |date      |discharge_cfs|flag
   <li>Blodgett, D. (2023). Network Linked Data Index (NLDI).
       <a href="https://labs.waterdata.usgs.gov/api/nldi/linked-data/">
       labs.waterdata.usgs.gov</a></li>
+  <li>USGS Water Data for the Nation API.
+      <a href="https://waterdata.usgs.gov/blog/api_catalog/">
+      waterdata.usgs.gov</a></li>
 </ul>
 
 <h2>AUTHOR</h2>
