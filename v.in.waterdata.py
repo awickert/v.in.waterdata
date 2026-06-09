@@ -139,7 +139,7 @@ def get_geographic_bbox():
     proj = gs.parse_command('g.proj', flags='g')
     region = gs.region()
 
-    if proj.get('proj') == 'longlat':
+    if proj.get('proj') == 'll':
         return region['w'], region['s'], region['e'], region['n']
 
     # Project SW and NE corners from native CRS to geographic (lon/lat)
