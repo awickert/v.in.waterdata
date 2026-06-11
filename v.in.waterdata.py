@@ -101,9 +101,8 @@ import grass.script as gs
 # System pyproj may not find its PROJ database when GRASS is launched from
 # an environment where PROJ_DATA points elsewhere (e.g. an Anaconda install).
 # Try the known system location before any pyproj import occurs.
-if not os.environ.get('PROJ_DATA') and not os.environ.get('PROJ_LIB'):
-    if os.path.exists('/usr/share/proj/proj.db'):
-        os.environ['PROJ_DATA'] = '/usr/share/proj'
+if os.path.exists('/usr/share/proj/proj.db'):
+    os.environ['PROJ_DATA'] = '/usr/share/proj'
 
 TMPFILES = []
 
