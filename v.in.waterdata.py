@@ -72,11 +72,6 @@
 #%end
 
 #%flag
-#%  key: b
-#%  description: Fetch upstream drainage basins from NLDI
-#%end
-
-#%flag
 #%  key: t
 #%  description: Fetch daily discharge time series (requires start_date and end_date)
 #%end
@@ -93,7 +88,6 @@
 
 #%rules
 #% requires_all: -t, start_date, end_date
-#% collective: -b, basins
 #%end
 
 import importlib
@@ -484,7 +478,6 @@ def main():
     parameter_cd = options['parameter_cd']
     start_date = options['start_date']
     end_date = options['end_date']
-    flag_basins = flags['b']
     flag_ts = flags['t']
     flag_ratings = flags['r']
     flag_channel = flags['c']
@@ -505,7 +498,7 @@ def main():
     site_nos = sites_gdf['site_no'].astype(str).tolist()
 
     # Upstream basins
-    if flag_basins:
+    if basins_map:
         gs.message("Fetching upstream basins from NLDI...")
         try:
             basins_gdf = fetch_basins(site_nos)
