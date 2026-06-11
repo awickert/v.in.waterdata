@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 ############################################################################
 #
 # MODULE:       v.in.waterdata
@@ -133,21 +133,18 @@ def get_geographic_bbox():
     proj = gs.parse_command('g.proj', flags='g')
     region = gs.region()
 
-    if proj.get('proj') == 'll':
+    if proj.get('proj') in ('ll', 'longlat'):
         return region['w'], region['s'], region['e'], region['n']
 
-    # Project SW and NE corners from native CRS to geographic (lon/lat)
-    coords = "{} {}\n{} {}".format(
-        region['w'], region['s'], region['e'], region['n']
-    )
-    import subprocess as _sp
-    proc = gs.start_command('m.proj', flags='i',
-                            stdin=_sp.PIPE, stdout=_sp.PIPE, stderr=_sp.PIPE)
-    stdout, _ = proc.communicate(coords.encode())
-    out = stdout.decode().strip().split('\n')
-    sw = [float(v) for v in out[0].split()[:2]]
-    ne = [float(v) for v in out[1].split()[:2]]
-    return sw[0], sw[1], ne[0], ne[1]
+    def _to_ll(x, y):
+        out = gs.read_command('m.proj', coordinates='{},{}'.format(x, y),
+                              flags='d', quiet=True)
+        lon, lat = out.strip().split('|')[:2]
+        return float(lon), float(lat)
+
+    sw_lon, sw_lat = _to_ll(region['w'], region['s'])
+    ne_lon, ne_lat = _to_ll(region['e'], region['n'])
+    return sw_lon, sw_lat, ne_lon, ne_lat
 
 
 def geodataframe_to_grass(gdf, output):
